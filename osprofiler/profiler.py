@@ -20,10 +20,35 @@ import inspect
 import socket
 import threading
 
+import zmq
+import json
+import sys
+
 from oslo_utils import reflection
 from oslo_utils import uuidutils
 
 from osprofiler import notifier
+
+
+def tracing_client(request=""):
+    context = zmq.Context()
+
+    #  Socket to talk to server
+    with open("/home/centos/DEBUG-TRACING", 'a') as f:
+        f.write("Connecting to tracing server\n")
+    socket = context.socket(zmq.REQ)
+    socket.connect("ipc:///tmp/test.pipe") # Using named pipes 
+    
+    with open("/home/centos/DEBUG-TRACING", 'a') as f:
+        f.write("Sending request\n")
+    socket.send(request)
+
+    #  Get the reply.
+    message = socket.recv()
+    with open("/home/centos/DEBUG-TRACING", 'a') as f:
+        f.write("Received reply %s\n" % message)
+    sys.stdout.flush()
+    return message
 
 
 # NOTE(boris-42): Thread safe storage for profiler instances.
@@ -75,7 +100,7 @@ def get():
     return getattr(__local_ctx, "profiler", None)
 
 
-def start(name, info=None):
+def start(name, info=None, trace=False):
     """Send new start notification if profiler instance is presented.
 
     :param name: The name of action. E.g. wsgi, rpc, db, etc..
@@ -83,14 +108,15 @@ def start(name, info=None):
                   it can be url, in rpc - message or in db sql - request.
     """
     profiler = get()
-    if profiler:
+    if profiler and tracing_client(name):
         profiler.start(name, info=info)
+        trace = True
 
 
 def stop(info=None):
     """Send new stop notification if profiler instance is presented."""
     profiler = get()
-    if profiler:
+    if profiler and tracing_client(profiler._name[-1]):
         profiler.stop(info=info)
 
 
@@ -315,16 +341,18 @@ class Trace(object):
         """
         self._name = name
         self._info = info
+        self._trace = False
 
     def __enter__(self):
-        start(self._name, info=self._info)
+        start(self._name, info=self._info, trace=self._trace)
 
     def __exit__(self, etype, value, traceback):
-        if etype:
-            info = {"etype": reflection.get_class_name(etype)}
-            stop(info=info)
-        else:
-            stop()
+	if self._trace:
+            if etype:
+                info = {"etype": reflection.get_class_name(etype)}
+                stop(info=info)
+            else:
+                stop()
 
 
 class _Profiler(object):
@@ -394,7 +422,7 @@ class _Profiler(object):
         self._trace_stack.pop()
 
     def _notify(self, name, info):
-        payload = {
+	payload = {
             "name": name,
             "base_id": self.get_base_id(),
             "trace_id": self.get_id(),
@@ -405,4 +433,4 @@ class _Profiler(object):
         if info:
             payload["info"] = info
 
-        notifier.notify(payload)
+#        notifier.notify(payload)
