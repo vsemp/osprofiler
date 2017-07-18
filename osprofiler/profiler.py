@@ -19,6 +19,7 @@ import functools
 import inspect
 import socket
 import threading
+import mmap
 
 from oslo_utils import reflection
 from oslo_utils import uuidutils
@@ -28,6 +29,18 @@ from osprofiler import notifier
 
 # NOTE(boris-42): Thread safe storage for profiler instances.
 __local_ctx = threading.local()
+
+
+def create_mmap(path):
+    """
+    Memory map the file 'path'
+    """
+    try:
+        with open(path, 'rb') as f:
+            mm = mmap.mmap(f.fileno(), length=4096, access=mmap.ACCESS_READ)
+    except IOError:
+        return None
+    return mm
 
 
 def _clean():
@@ -64,6 +77,10 @@ def init(hmac_key, base_id=None, parent_id=None, connection_str=None,
                                      parent_id=parent_id,
                                      connection_str=connection_str,
                                      project=project, service=service)
+
+    if not getattr(__local_ctx, 'profiler_ipc', None) or 'mmap' not in __local_ctx.profiler_ipc:
+        __local_ctx.profiler_ipc['mmap'] = create_mmap("/dev/shm/profiler_ipc")
+
     return __local_ctx.profiler
 
 
@@ -75,7 +92,22 @@ def get():
     return getattr(__local_ctx, "profiler", None)
 
 
-def start(name, info=None):
+def get_mmap_str():
+    """
+    Get string from the memory mapped file '/dev/shm/profiler_ipc'
+    and return it or otherwise return None.
+    """
+    if not getattr(__local_ctx, 'profiler_ipc', None):
+        return None
+    if 'mmap' not in __local_ctx.profiler_ipc:
+        return None
+    if not __local_ctx.profiler_ipc['mmap']:
+        return None
+    __local_ctx.profiler_ipc['mmap'].seek(0)
+    return __local_ctx.profiler_ipc['mmap'].readline()
+
+
+def start(name, info=None, trace=False):
     """Send new start notification if profiler instance is presented.
 
     :param name: The name of action. E.g. wsgi, rpc, db, etc..
@@ -83,8 +115,9 @@ def start(name, info=None):
                   it can be url, in rpc - message or in db sql - request.
     """
     profiler = get()
-    if profiler:
+    if profiler and get_mmap_str():
         profiler.start(name, info=info)
+        trace = True
 
 
 def stop(info=None):
@@ -315,16 +348,18 @@ class Trace(object):
         """
         self._name = name
         self._info = info
+        self._trace = False
 
     def __enter__(self):
-        start(self._name, info=self._info)
+        start(self._name, info=self._info, trace=self._trace)
 
     def __exit__(self, etype, value, traceback):
-        if etype:
-            info = {"etype": reflection.get_class_name(etype)}
-            stop(info=info)
-        else:
-            stop()
+        if self._trace:
+                if etype:
+                    info = {"etype": reflection.get_class_name(etype)}
+                    stop(info=info)
+                else:
+                    stop()
 
 
 class _Profiler(object):
