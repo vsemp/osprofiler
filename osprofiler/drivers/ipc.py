@@ -51,7 +51,8 @@ class IPC(base.Driver):
         """
         thread_local_storage = threading.local()
         # ZeroMQ sockets are not thread safe. That's why we need to create a socket per thread
-        if not getattr(thread_local_storage, 'profiler_ipc', None):
+        if not getattr(thread_local_storage, 'profiler_ipc', None) \
+        or 'socket' not in thread_local_storage.profiler_ipc:
             try:
                 import zmq.green # This is for green threads. Google zmq.green vs zmq for details
             except ImportError:
