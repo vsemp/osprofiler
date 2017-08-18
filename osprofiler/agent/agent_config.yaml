@@ -1,0 +1,4 @@
+# A configuration file for agent.py
+ipc_connection_str: ipc:///tmp/tracing.pipe
+mongo_connection_str: mongodb://localhost:27017
+lim: 10

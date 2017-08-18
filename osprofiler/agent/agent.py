@@ -6,6 +6,7 @@ Created on Fri Jul 14 07:02:39 2017
 
 
 import sys
+import yaml
 import gevent
 import zmq.green as zmq
 
@@ -13,7 +14,7 @@ from gevent.queue import Queue
 from gevent.pool import Pool
 
 
-def receiver(connection_str, context, queue):
+def receiver(connection_str, context, queue, buff, lim):
     """
     Receives messages from 'connection_str' and puts them into 'queue'
 
@@ -29,7 +30,9 @@ def receiver(connection_str, context, queue):
     while True:
         msg = receiver_socket.recv_json()
         print("Switched to the receiver thread for %s" % msg)
-        queue.put(msg)
+        if buff.qsize() >= lim and buff.qsize() >= 1:
+            queue.put(buff.get())
+        buff.put(msg)
 
 
 def mongo(connection_str, queue):
@@ -60,7 +63,7 @@ def mongo(connection_str, queue):
         db.profiler.insert_one(data)
 
 
-def start_threads(ipc_connection_str, mongo_connection_str):
+def start_threads(ipc_connection_str, mongo_connection_str, lim):
     """
     This function sets up how we run threads and starts them.
 
@@ -70,26 +73,35 @@ def start_threads(ipc_connection_str, mongo_connection_str):
     
     context = zmq.Context() # One global context for all green threads
     queue = Queue() # This is a queue that's used to synchronize green threads
+    buff = Queue()
     pool = Pool(2) # Use gevent.pool.ThreadPool to create regular (not green) threads
-    pool.spawn(receiver, connection_str=ipc_connection_str, context=context, queue=queue)
+    pool.spawn(receiver, connection_str=ipc_connection_str, context=context, queue=queue, buff=buff, lim=lim)
     pool.spawn(mongo, connection_str=mongo_connection_str, queue=queue)
     pool.join() # Yield control and wait until green threads in 'pool' finish (wait forever) 
 
 
-def main():
+def main():  
+    with open("agent_config.yaml", 'r') as stream:  
+        yaml = yaml.load(stream)
+
+    ipc_connection_str = yaml['ipc_connection_str']
+    mongo_connection_str = yaml['mongo_connection_str']
+    lim = int(yaml['lim'])
+    
     # Need to rewrite this so that it reads some config file
-    if len(sys.argv) == 1:
-        ipc_connection_str = 'ipc:///tmp/tracing.pipe'
-        mongo_connection_str = 'mongodb://localhost:27017'
-    elif len(sys.argv) == 2:
-        ipc_connection_str = sys.argv[2]
-        mongo_connection_str = 'mongodb://localhost:27017'
-    elif len(sys.argv) == 3:
-        ipc_connection_str = sys.argv[2]
-        mongo_connection_str = sys.argv[3]
-    else:
-        print("Incorrect number of arguments")
-    start_threads(ipc_connection_str, mongo_connection_str)
+    # if len(sys.argv) == 1:
+    #     ipc_connection_str = 'ipc:///tmp/tracing.pipe'
+    #     mongo_connection_str = 'mongodb://localhost:27017'
+    # elif len(sys.argv) == 2:
+    #     ipc_connection_str = sys.argv[2]
+    #     mongo_connection_str = 'mongodb://localhost:27017'
+    # elif len(sys.argv) == 3:
+    #     ipc_connection_str = sys.argv[2]
+    #     mongo_connection_str = sys.argv[3]
+    # else:
+    #     print("Incorrect number of arguments")
+    
+    start_threads(ipc_connection_str, mongo_connection_str, lim)
 
 
 if __name__ == '__main__':
